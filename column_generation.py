@@ -3,7 +3,7 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from ortools.linear_solver import pywraplp
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from datetime import timedelta
 from domain.flight import Flight
 from domain.aircraft import Aircraft
@@ -13,35 +13,38 @@ from config import Costs, SolverSettings
 
 class RecoveryOptimizer:
 
-    def __init__(self, original_flights: List[Flight],
-                 aircraft_fleet: List[Aircraft]):
+    def __init__(self, flights: List[Flight],
+                 aircraft_fleet: List[Aircraft],
+                 crew_roster: Optional[dict] = None):
         self.aircraft_fleet = aircraft_fleet
         self.cancel_penalty = Costs.CANCEL_FLIGHT
         self.generated_rotations: List[Rotation] = []
+        self.crew_roster = crew_roster or {}
 
         # --- THE DISCRETIZED DELAY EXPANSION ---
         self.flights = []
         self.base_flight_ids = set()
 
-        for base_flight in original_flights:
+        for base_flight in flights:
             self.base_flight_ids.add(base_flight.base_flight_id)
 
             # Create the On-Time copy
             self.flights.append(base_flight)
 
             # Create delayed copies (e.g., +60 mins, +120 mins)
-            # You can tweak these buckets in config later
             for delay in [60, 120, 180]:
                 delayed_copy = Flight(
                     flight_number=base_flight.flight_number,
                     dep_airport=base_flight.dep_airport,
                     arr_airport=base_flight.arr_airport,
-                    # We pass the original times, the __post_init__ handles the shift
                     sched_dep=base_flight.sched_dep -
                     timedelta(minutes=base_flight.delay_mins),
                     sched_arr=base_flight.sched_arr -
                     timedelta(minutes=base_flight.delay_mins),
-                    delay_mins=delay)
+                    delay_mins=delay,
+                    pax_count=base_flight.pax_count,
+                    route_cost=base_flight.route_cost,
+                )
                 self.flights.append(delayed_copy)
 
     def _solve_master_problem(
@@ -121,7 +124,7 @@ class RecoveryOptimizer:
         for ac in self.aircraft_fleet:
             for start_flight in self.flights:
 
-                rot1 = Rotation([start_flight], ac)
+                rot1 = Rotation([start_flight], ac, self.crew_roster)
                 if rot1.is_feasible and (
                         rot1.cost - duals[start_flight.base_flight_id] < -0.01):
                     new_columns.append(rot1)
@@ -131,7 +134,7 @@ class RecoveryOptimizer:
                         if start_flight.base_flight_id == f2.base_flight_id:
                             continue
 
-                        rot2 = Rotation([start_flight, f2], ac)
+                        rot2 = Rotation([start_flight, f2], ac, self.crew_roster)
                         if rot2.is_feasible and (
                                 rot2.cost -
                             (duals[start_flight.base_flight_id] +
