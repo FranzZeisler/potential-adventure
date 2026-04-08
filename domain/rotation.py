@@ -1,8 +1,13 @@
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datetime import timedelta
 from typing import List, Optional
-from config import Costs
+
+try:
+    from config import Costs
+except ImportError:
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from config import Costs
+
 from .flight import Flight
 from .aircraft import Aircraft
 
