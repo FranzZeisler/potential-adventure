@@ -97,6 +97,7 @@ STATUS_COLORS = {
     "Cancelled": "#2c3e50",
     "AOG / Maint": "#e74c3c",
     "Diverted": "#9b59b6",
+    "Available": "#1e3a4a",
 }
 
 
@@ -105,8 +106,25 @@ def generate_mock_schedule(start_date, num_days=2):
     random.seed(0)
     schedule = []
 
+    sim_end = start_date + timedelta(days=num_days)
+
     for ac_type, tails in sunexpress_fleet.items():
         if ac_type in ["Reserve Aircraft", "Subcharter"]:
+            for tail in tails:
+                schedule.append({
+                    "Tail": tail,
+                    "Aircraft": ac_type,
+                    "FlightNumber": "AVAIL",
+                    "Departure": "-",
+                    "Arrival": "-",
+                    "Start": start_date,
+                    "End": sim_end,
+                    "Status": "Available",
+                    "Label": f"{tail} — Available / No Flights",
+                    "Pax": 0,
+                    "RouteCost": 0.0,
+                    "AirportFee": 0.0,
+                })
             continue
 
         for tail in tails:
