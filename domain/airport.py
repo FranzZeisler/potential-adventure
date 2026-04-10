@@ -2,12 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-try:
-    from config import OpsRules
-except ImportError:
-    import sys, os
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from config import OpsRules
+from config import OpsRules
 
 @dataclass(frozen=True)
 class Airport:

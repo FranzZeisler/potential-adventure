@@ -1,12 +1,7 @@
 from datetime import timedelta
 from typing import List, Optional
 
-try:
-    from config import Costs
-except ImportError:
-    import sys, os
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from config import Costs
+from config import Costs
 
 from .flight import Flight
 from .aircraft import Aircraft
