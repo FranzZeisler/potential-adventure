@@ -1,10 +1,12 @@
 import streamlit as st
 import pandas as pd
-from datetime import timedelta
+from datetime import timedelta, datetime
 import random
 
 # Import the Airport class to use its business logic during generation
 from domain.airport import Airport
+from domain.crew import CrewMember
+from config import Costs
 
 # --- FLEET DATA ---
 sunexpress_fleet = {
@@ -33,25 +35,33 @@ sunexpress_fleet = {
 
 # Define Airport Objects to access their curfew/turnaround logic
 AIRPORT_OBJS = {
-    # Hubs
-    "AYT": Airport("AYT", min_turnaround_mins=45),
-    "ADB": Airport("ADB", min_turnaround_mins=45),
-    "SAW": Airport("SAW", min_turnaround_mins=50),
-    "ESB": Airport("ESB", min_turnaround_mins=45),
+    # Hubs (no curfew)
+    "AYT": Airport("AYT", min_turnaround_mins=45, curfew_start_hr=None, curfew_end_hr=None,
+                   airport_fee=Costs.AIRPORT_FEES.get("AYT", 500.0)),
+    "ADB": Airport("ADB", min_turnaround_mins=45, curfew_start_hr=None, curfew_end_hr=None,
+                   airport_fee=Costs.AIRPORT_FEES.get("ADB", 500.0)),
+    "SAW": Airport("SAW", min_turnaround_mins=50, curfew_start_hr=None, curfew_end_hr=None,
+                   airport_fee=Costs.AIRPORT_FEES.get("SAW", 500.0)),
+    "ESB": Airport("ESB", min_turnaround_mins=45, curfew_start_hr=None, curfew_end_hr=None,
+                   airport_fee=Costs.AIRPORT_FEES.get("ESB", 500.0)),
     # Destinations (Many European airports have strict night curfews)
-    "FRA": Airport("FRA", curfew_start_hr=23, curfew_end_hr=5),
-    "MUC": Airport("MUC", curfew_start_hr=23, curfew_end_hr=6),
-    "ZRH": Airport("ZRH", curfew_start_hr=23, curfew_end_hr=6),
-    "CDG": Airport("CDG", curfew_start_hr=0, curfew_end_hr=5),
-    "DUS": Airport("DUS"),
-    "CGN": Airport("CGN"),
-    "BER": Airport("BER"),
-    "STR": Airport("STR"),
-    "HAJ": Airport("HAJ"),
-    "MAN": Airport("MAN"),
-    "LGW": Airport("LGW"),
-    "VIE": Airport("VIE"),
-    "AMS": Airport("AMS")
+    "FRA": Airport("FRA", curfew_start_hr=23, curfew_end_hr=5,
+                   airport_fee=Costs.AIRPORT_FEES.get("FRA", 500.0)),
+    "MUC": Airport("MUC", curfew_start_hr=23, curfew_end_hr=6,
+                   airport_fee=Costs.AIRPORT_FEES.get("MUC", 500.0)),
+    "ZRH": Airport("ZRH", curfew_start_hr=23, curfew_end_hr=6,
+                   airport_fee=Costs.AIRPORT_FEES.get("ZRH", 500.0)),
+    "CDG": Airport("CDG", curfew_start_hr=0, curfew_end_hr=5,
+                   airport_fee=Costs.AIRPORT_FEES.get("CDG", 500.0)),
+    "DUS": Airport("DUS", airport_fee=Costs.AIRPORT_FEES.get("DUS", 500.0)),
+    "CGN": Airport("CGN", airport_fee=Costs.AIRPORT_FEES.get("CGN", 500.0)),
+    "BER": Airport("BER", airport_fee=Costs.AIRPORT_FEES.get("BER", 500.0)),
+    "STR": Airport("STR", airport_fee=Costs.AIRPORT_FEES.get("STR", 500.0)),
+    "HAJ": Airport("HAJ", airport_fee=Costs.AIRPORT_FEES.get("HAJ", 500.0)),
+    "MAN": Airport("MAN", airport_fee=Costs.AIRPORT_FEES.get("MAN", 500.0)),
+    "LGW": Airport("LGW", airport_fee=Costs.AIRPORT_FEES.get("LGW", 500.0)),
+    "VIE": Airport("VIE", airport_fee=Costs.AIRPORT_FEES.get("VIE", 500.0)),
+    "AMS": Airport("AMS", airport_fee=Costs.AIRPORT_FEES.get("AMS", 500.0)),
 }
 
 HUBS = ["AYT", "ADB", "SAW", "ESB"]
@@ -73,6 +83,11 @@ ROUTE_DURATIONS = {
     "AMS": 4.0
 }
 
+DELAY_REASONS = [
+    "Technical", "Weather", "ATC", "Late Crew", "Late Aircraft",
+    "Passenger Issue", "Fuel Delay", "Ground Handling"
+]
+
 STATUS_COLORS = {
     "Scheduled": "#3498db",
     "Boarding": "#f1c40f",
@@ -80,12 +95,14 @@ STATUS_COLORS = {
     "Arrived": "#95a5a6",
     "Delayed": "#e67e22",
     "Cancelled": "#2c3e50",
-    "AOG / Maint": "#e74c3c"
+    "AOG / Maint": "#e74c3c",
+    "Diverted": "#9b59b6",
 }
 
 
 @st.cache_data
 def generate_mock_schedule(start_date, num_days=2):
+    random.seed(0)
     schedule = []
 
     for ac_type, tails in sunexpress_fleet.items():
@@ -123,12 +140,17 @@ def generate_mock_schedule(start_date, num_days=2):
                 arr_apt = AIRPORT_OBJS.get(next_loc, Airport(next_loc))
                 if arr_apt.is_curfew_violated(end_flight):
                     # If we would land in curfew, push the whole flight back to land after curfew
-                    # This is how real schedulers avoid fines
                     current_time += timedelta(hours=1)
                     continue  # Retry this leg with the new start time
 
                 # 5. Commit Flight
                 flt_num = f"XQ{flight_counter}"
+                pax = random.randint(120, 189)
+                route_cost = Costs.ROUTE_COSTS.get(
+                    next_loc if current_loc in HUBS else current_loc,
+                    Costs.DEFAULT_ROUTE_COST
+                )
+                airport_fee = Costs.AIRPORT_FEES.get(next_loc, Costs.DEFAULT_AIRPORT_FEE)
                 schedule.append({
                     "Tail": tail,
                     "Aircraft": ac_type,
@@ -138,7 +160,10 @@ def generate_mock_schedule(start_date, num_days=2):
                     "Start": start_flight,
                     "End": end_flight,
                     "Status": "Scheduled",
-                    "Label": f"{flt_num} {current_loc}-{next_loc}"
+                    "Label": f"{flt_num} {current_loc}-{next_loc}",
+                    "Pax": pax,
+                    "RouteCost": route_cost,
+                    "AirportFee": airport_fee,
                 })
 
                 # 6. Apply MIN TURNAROUND for next leg
@@ -148,3 +173,45 @@ def generate_mock_schedule(start_date, num_days=2):
                 flight_counter += 1
 
     return pd.DataFrame(schedule)
+
+
+def generate_crew_roster(sim_start: datetime, seed: int = 42) -> dict:
+    """Generate CrewMember objects keyed by employee_id for each tail in the main fleet."""
+    random.seed(seed)
+    roster = {}
+    fleet_types = ["Boeing 737-800", "Boeing 737 MAX 8"]
+
+    for ac_type, tails in sunexpress_fleet.items():
+        if ac_type not in fleet_types:
+            continue
+        for tail in tails:
+            for role, prefix in [("Captain", "CPT"), ("First Officer", "FO")]:
+                emp_id = f"{prefix}-{tail}"
+                ratings = {ac_type}
+                # ~20% chance of dual rating
+                if random.random() < 0.2:
+                    other = [ft for ft in fleet_types if ft != ac_type]
+                    if other:
+                        ratings.add(random.choice(other))
+                duty_offset = random.uniform(0, 8)
+                duty_start = sim_start + timedelta(hours=duty_offset)
+                crew = CrewMember(
+                    employee_id=emp_id,
+                    name=f"{role} {tail}",
+                    role=role,
+                    type_ratings=ratings,
+                    duty_start=duty_start,
+                )
+                roster[emp_id] = crew
+    return roster
+
+
+def assign_crew_to_tails(roster: dict) -> dict:
+    """Return dict mapping tail -> [captain_id, fo_id]."""
+    tail_crew = {}
+    for emp_id, crew in roster.items():
+        tail = emp_id.split("-", 1)[1]
+        if tail not in tail_crew:
+            tail_crew[tail] = []
+        tail_crew[tail].append(emp_id)
+    return tail_crew
