@@ -36,7 +36,7 @@ def get_fleet_type(tail):
 # Base simulation date (Yesterday to tomorrow for a good spread)
 sim_start = datetime.now().replace(hour=0, minute=0, second=0,
                                    microsecond=0) - timedelta(days=1)
-current_sim_time = sim_start + timedelta(hours=24)
+current_sim_time = datetime.now()  # Actual wall-clock time for red line and status logic
 
 # Initialize session state
 if 'schedule_df' not in st.session_state:
@@ -49,6 +49,20 @@ if 'last_result' not in st.session_state:
     st.session_state.last_result = None
 
 df_schedule = st.session_state.schedule_df
+
+# Dynamically update statuses based on actual current time for display purposes
+_now = current_sim_time
+_display_df = df_schedule.copy()
+def _dynamic_status(row):
+    if row['Status'] not in ('Scheduled', 'Boarding'):
+        return row['Status']
+    if row['End'] < _now:
+        return 'Arrived'
+    if row['Start'] <= _now:
+        return 'Airborne'
+    return row['Status']
+_display_df['Status'] = _display_df.apply(_dynamic_status, axis=1)
+df_schedule = _display_df
 all_tail_numbers = [
     reg for sublist in sunexpress_fleet.values() for reg in sublist
 ]
@@ -56,7 +70,7 @@ all_tail_numbers = [
 # Future flights for diversion selector
 future_flights_df = df_schedule[
     (df_schedule['End'] > current_sim_time) &
-    (~df_schedule['FlightNumber'].isin(["MAINT", "AOG"]))
+    (~df_schedule['FlightNumber'].isin(["MAINT", "AOG", "AVAIL"]))
 ]
 
 # --- SIDEBAR: FILTERS ---
@@ -173,7 +187,7 @@ if st.sidebar.button("Re-Optimise Schedule", type="primary"):
         # Build Flights
         flight_objs = []
         for _, row in st.session_state.schedule_df.iterrows():
-            if row['FlightNumber'] in ["MAINT", "AOG"]:
+            if row['FlightNumber'] in ["MAINT", "AOG", "AVAIL"]:
                 continue
             if row['End'] > current_sim_time:
                 dep_apt = airports_dict.get(row['Departure'], Airport(code=row['Departure']))
