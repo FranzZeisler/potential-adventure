@@ -3,17 +3,17 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 
-# --- NEW IMPORTS: Column Generation and Domain Models ---
-from column_generation import RecoveryOptimizer
+# --- Imports: MILP Solver and Domain Models ---
+from milp_solver import MILPRecoveryOptimizer
 from domain.airport import Airport
 from domain.aircraft import Aircraft
 from domain.flight import Flight
 from config import Costs
 
-# Import configuration and data generation logic
-from data_generation import (sunexpress_fleet, STATUS_COLORS, DELAY_REASONS,
-                              AIRPORT_OBJS, generate_mock_schedule,
-                              generate_crew_roster, assign_crew_to_tails)
+# Import configuration and data generation logic (small domestic Turkey dataset)
+from data_generation_2 import (sunexpress_fleet, STATUS_COLORS, DELAY_REASONS,
+                                AIRPORT_OBJS, generate_mock_schedule,
+                                generate_crew_roster, assign_crew_to_tails)
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="SunExpress Recovery Optimisation Dashboard",
@@ -92,7 +92,7 @@ search_query = st.sidebar.text_input("Search Tail / Flight No.", "")
 
 # --- SIDEBAR: ENTERPRISE OPTIMIZER ---
 st.sidebar.markdown("---")
-st.sidebar.markdown("### ⚙️ Time-Space TSN Optimizer")
+st.sidebar.markdown("### ⚙️ MILP Recovery Optimizer")
 
 disruption_type = st.sidebar.radio(
     "Disruption Type",
@@ -204,12 +204,12 @@ if st.sidebar.button("Re-Optimise Schedule", type="primary"):
                 flight_objs.append(f)
 
         # Execute Solver
-        optimizer = RecoveryOptimizer(
+        optimizer = MILPRecoveryOptimizer(
             flights=flight_objs,
             aircraft_fleet=fleet_objs,
             crew_roster=st.session_state.crew_roster,
         )
-        result = optimizer.run(max_iterations=10)
+        result = optimizer.run()
         st.session_state.last_result = result
 
     # Apply the Mathematical Results to the DataFrame
@@ -217,7 +217,7 @@ if st.sidebar.button("Re-Optimise Schedule", type="primary"):
         st.sidebar.success(
             f"Optimal Solution Found!\n**Total Cost:** €{result['cost']:,.0f}")
         st.sidebar.info(
-            f"Generated {result['total_columns_generated']} dynamic rotations.")
+            f"Assigned {len(result['assignments'])} flights to aircraft.")
 
         # Apply Cancellations
         cancelled_fids = result["cancelled_flight_ids"]
@@ -231,29 +231,30 @@ if st.sidebar.button("Re-Optimise Schedule", type="primary"):
                     st.session_state.schedule_df.at[idx[0], 'Status'] = "Cancelled"
                     st.session_state.schedule_df.at[idx[0], 'Label'] = f"❌ CANCELLED ({row['FlightNumber']})"
 
-        # Apply New Tail Assignments and Delays
+        # Apply New Tail Assignments
         swaps_made = 0
-        for rot in result["rotations"]:
-            for f in rot.flights:
-                idx = st.session_state.schedule_df.index[
-                    st.session_state.schedule_df['FlightNumber'] ==
-                    f.flight_number].tolist()
-                if not idx:
-                    continue
-                i = idx[0]
+        for assign in result["assignments"]:
+            f = assign["flight"]
+            a = assign["aircraft"]
+            idx = st.session_state.schedule_df.index[
+                st.session_state.schedule_df['FlightNumber'] ==
+                f.flight_number].tolist()
+            if not idx:
+                continue
+            i = idx[0]
 
-                old_tail = st.session_state.schedule_df.at[i, 'Tail']
-                new_tail = rot.aircraft.tail_number
-                if old_tail != new_tail:
-                    st.session_state.schedule_df.at[i, 'Tail'] = new_tail
-                    st.session_state.schedule_df.at[i, 'Label'] = f"🔄 SWAP {f.flight_number}"
-                    swaps_made += 1
+            old_tail = st.session_state.schedule_df.at[i, 'Tail']
+            new_tail = a.tail_number
+            if old_tail != new_tail:
+                st.session_state.schedule_df.at[i, 'Tail'] = new_tail
+                st.session_state.schedule_df.at[i, 'Label'] = f"🔄 SWAP {f.flight_number}"
+                swaps_made += 1
 
-                if f.delay_mins > 0:
-                    st.session_state.schedule_df.at[i, 'Start'] = f.sched_dep
-                    st.session_state.schedule_df.at[i, 'End'] = f.sched_arr
-                    st.session_state.schedule_df.at[i, 'Status'] = "Delayed"
-                    st.session_state.schedule_df.at[i, 'Label'] = f"⏱ DELAY +{f.delay_mins}m {f.flight_number}"
+            if assign["delay_mins"] > 0:
+                st.session_state.schedule_df.at[i, 'Start'] = f.sched_dep
+                st.session_state.schedule_df.at[i, 'End'] = f.sched_arr
+                st.session_state.schedule_df.at[i, 'Status'] = "Delayed"
+                st.session_state.schedule_df.at[i, 'Label'] = f"⏱ DELAY +{assign['delay_mins']}m {f.flight_number}"
 
         st.sidebar.warning(f"Reassigned {swaps_made} flights to different aircraft.")
         st.rerun()
@@ -369,26 +370,18 @@ if result and result["status"] == "Success":
     st.markdown("---")
     st.subheader("📊 Recovery Plan - Cost Breakdown")
 
-    # Aggregate cost breakdown across all rotations
-    agg_costs: dict = {}
-    for rot in result["rotations"]:
-        for k, v in rot.cost_breakdown.items():
-            agg_costs[k] = agg_costs.get(k, 0.0) + v
-
-    n_cancelled = len(result["cancelled_flight_ids"])
-    cancel_total = n_cancelled * Costs.CANCEL_FLIGHT
-    if cancel_total > 0:
-        agg_costs["cancellations"] = cancel_total
+    # Use the cost breakdown returned directly by the MILP solver
+    agg_costs = dict(result.get("cost_breakdown", {}))
 
     # Summary metrics
     m1, m2, m3 = st.columns(3)
-    delayed_count = sum(1 for rot in result["rotations"] for f in rot.flights if f.delay_mins > 0)
-    swaps_count = 0
-    for rot in result["rotations"]:
-        orig_tails = st.session_state.schedule_df.set_index('FlightNumber')['Tail'].to_dict()
-        for f in rot.flights:
-            if orig_tails.get(f.flight_number) != rot.aircraft.tail_number:
-                swaps_count += 1
+    n_cancelled = len(result["cancelled_flight_ids"])
+    delayed_count = sum(1 for a in result["assignments"] if a["delay_mins"] > 0)
+    orig_tails = st.session_state.schedule_df.set_index('FlightNumber')['Tail'].to_dict()
+    swaps_count = sum(
+        1 for a in result["assignments"]
+        if orig_tails.get(a["flight"].flight_number) != a["aircraft"].tail_number
+    )
     m1.metric("✈️ Cancelled Flights", n_cancelled)
     m2.metric("⏱️ Delayed Flights", delayed_count)
     m3.metric("🔄 Tail Swaps", swaps_count)
@@ -410,20 +403,21 @@ if result and result["status"] == "Success":
 
     # Recovery actions table
     actions = []
-    for rot in result["rotations"]:
-        for f in rot.flights:
-            action = "Delayed" if f.delay_mins > 0 else "Scheduled"
-            orig_tails = st.session_state.schedule_df.set_index('FlightNumber')['Tail'].to_dict()
-            if orig_tails.get(f.flight_number) != rot.aircraft.tail_number:
-                action = "Swapped"
-            actions.append({
-                "Flight": f.flight_number,
-                "Action": action,
-                "New Tail": rot.aircraft.tail_number,
-                "Delay (min)": f.delay_mins,
-                "EU261 (€)": f"{f.eu261_compensation:,.0f}",
-                "Total Cost (€)": f"{rot.cost:,.0f}",
-            })
+    for assign in result["assignments"]:
+        f = assign["flight"]
+        a = assign["aircraft"]
+        action = "Delayed" if assign["delay_mins"] > 0 else "Scheduled"
+        if orig_tails.get(f.flight_number) != a.tail_number:
+            action = "Swapped"
+        flight_cost = f.route_cost + f.arr_airport.airport_fee + Costs.DISPATCH_BASE
+        actions.append({
+            "Flight": f.flight_number,
+            "Action": action,
+            "New Tail": a.tail_number,
+            "Delay (min)": assign["delay_mins"],
+            "EU261 (€)": f"{f.eu261_compensation:,.0f}",
+            "Total Cost (€)": f"{flight_cost:,.0f}",
+        })
     for fid in result["cancelled_flight_ids"]:
         flt_num = fid.rsplit("_", 1)[0]
         actions.append({
